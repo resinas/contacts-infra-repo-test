@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: contactfis-dev
+  labels:
+    app.kubernetes.io/name: contactfis
+    app.kubernetes.io/environment: dev
