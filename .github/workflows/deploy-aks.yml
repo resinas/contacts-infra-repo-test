@@ -81,7 +81,7 @@ jobs:
       - name: Apply manifests for environment
         run: |
           kubectl apply -f "$ENV_DIR/namespace.yaml"
-          kubectl apply -f "$ENV_DIR/backend/"
+          kubectl apply -f "$ENV_DIR/contacts/"
           kubectl apply -f "$ENV_DIR/frontend/"
           kubectl apply -f "$ENV_DIR/gateway/"
 
