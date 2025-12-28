@@ -1,0 +1,105 @@
+name: Deploy to AKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Environment to deploy"
+        type: choice
+        required: true
+        options:
+          - dev
+          - prod
+      frontend_tag:
+        description: "Frontend image tag (e.g., sha or latest)"
+        required: true
+        default: "latest"
+      contacts_tag:
+        description: "Contacts image tag (e.g., sha or latest)"
+        required: true
+        default: "latest"
+
+permissions:
+  id-token: write   # needed for Azure OIDC login
+  contents: read
+
+env:
+  AKS_RESOURCE_GROUP: contactfis-rg
+  AKS_CLUSTER_NAME: contactfis-aks
+
+  GHCR_REGISTRY: ghcr.io
+  GHCR_ORG: resinas
+  GHCR_REPO_FRONTEND: fis-contacts-react
+  GHCR_REPO_CONTACTS: contacts-service
+
+  DEV_NAMESPACE: contactfis-dev
+  PROD_NAMESPACE: contactfis-prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout infra repo
+        uses: actions/checkout@v4
+
+      - name: Pick env configuration
+        run: |
+          if [ "${{ inputs.env }}" = "dev" ]; then
+            echo "NS=${DEV_NAMESPACE}" >> $GITHUB_ENV
+            echo "ENV_DIR=environments/dev" >> $GITHUB_ENV
+            echo "MONGO_URL=${{ secrets.MONGO_URL_DEV }}" >> $GITHUB_ENV
+          else
+            echo "NS=${PROD_NAMESPACE}" >> $GITHUB_ENV
+            echo "ENV_DIR=environments/prod" >> $GITHUB_ENV
+            echo "MONGO_URL=${{ secrets.MONGO_URL_PROD }}" >> $GITHUB_ENV
+          fi
+
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Set up kubelogin
+        uses: azure/use-kubelogin@v1
+        with:
+          kubelogin-version: "latest"
+
+      - name: Set AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ env.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ env.AKS_CLUSTER_NAME }}
+          use-kubelogin: true
+
+      - name: Apply manifests for environment
+        run: |
+          kubectl apply -f "$ENV_DIR/namespace.yaml"
+          kubectl apply -f "$ENV_DIR/backend/"
+          kubectl apply -f "$ENV_DIR/frontend/"
+          kubectl apply -f "$ENV_DIR/gateway/"
+
+      - name: Create/update backend secrets
+        run: |
+          kubectl -n "$NS" create secret generic backend-secrets \
+          --from-literal="mongo_url=${{ env.MONGO_URL }}" \
+          --dry-run=client -o yaml | kubectl apply -f -          
+
+      - name: Update images (imperative patch)
+        run: |
+          kubectl -n "$NS" set image deployment/contacts \
+            contacts="${GHCR_REGISTRY}/${GHCR_ORG}/${GHCR_REPO_CONTACTS}:${{ inputs.contacts_tag }}"
+
+          kubectl -n "$NS" set image deployment/frontend \
+            frontend="${GHCR_REGISTRY}/${GHCR_ORG}/${GHCR_REPO_FRONTEND}:${{ inputs.frontend_tag }}"
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n "$NS" rollout status deployment/contacts
+          kubectl -n "$NS" rollout status deployment/frontend
